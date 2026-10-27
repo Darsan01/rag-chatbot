@@ -1,53 +1,42 @@
-import asyncio
-import threading
+"""Fixed Ollama starter: plain subprocess, no asyncio recursion bug.
+
+What was wrong in the original:
+- pipe() called asyncio.gather(pipe(stdout), pipe(stderr)) INSIDE
+  itself, after its loop finished - so every finished pipe spawned
+  two more pipes, forever.
+- The thread was non-daemon and never joined, and the Ollama
+  process was never stopped on exit.
+- is_port_open() only caught ConnectionRefusedError.
+"""
 import socket
+import subprocess
+import threading
 
 
 def run_ollama_server():
-    async def run_process(cmd):
-        print(">>> starting", *cmd)
-        process = await asyncio.create_subprocess_exec(
-            *cmd,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-            # env={**os.environ, 'OLLAMA_NUM_PARALLEL': '8', 'OLLAMA_MAX_LOADED_MODELS': '1'}
-        )
-
-        # define an async pipe function
-        async def pipe(lines):
-            async for line in lines:
-                print(line.decode().strip())
-
-            await asyncio.gather(
-                pipe(process.stdout),
-                pipe(process.stderr),
-            )
-
-        # call it
-        await asyncio.gather(pipe(process.stdout), pipe(process.stderr))
-
-    async def start_ollama_serve():
-        await run_process(["ollama", "serve"])
-
-    def run_async_in_thread(loop, coro):
-        asyncio.set_event_loop(loop)
-        loop.run_until_complete(coro)
-        loop.close()
-
-    # Create a new event loop that will run in a new thread
-    new_loop = asyncio.new_event_loop()
-
-    # Start ollama serve in a separate thread so the cell won't block execution
-    thread = threading.Thread(
-        target=run_async_in_thread, args=(new_loop, start_ollama_serve())
+    """Start `ollama serve` in a daemon thread. Returns the process."""
+    process = subprocess.Popen(
+        ["ollama", "serve"],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
     )
+
+    def _drain():
+        assert process.stdout is not None
+        for line in process.stdout:
+            print(line.rstrip())
+
+    thread = threading.Thread(target=_drain, daemon=True)
     thread.start()
+    return process
 
 
-def is_port_open(port):
+def is_port_open(port: int, host: str = "localhost") -> bool:
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        s.settimeout(1)
         try:
-            s.connect(("localhost", port))
+            s.connect((host, port))
             return True
-        except ConnectionRefusedError:
+        except OSError:
             return False

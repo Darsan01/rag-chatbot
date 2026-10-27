@@ -8,6 +8,7 @@ from dataclasses import dataclass
 from typing import ClassVar
 from llama_index.core.chat_engine.types import StreamingAgentChatResponse
 from .theme import JS_LIGHT_THEME, CSS
+from ..core.model.model import OPENAI_MODELS
 from ..pipeline import LocalRAGPipeline
 from ..logger import Logger
 
@@ -38,13 +39,14 @@ class LLMResponse:
         pass
 
     def _yield_string(self, message: str):
-        for i in range(len(message)):
-            time.sleep(0.01)
-            yield (
-                DefaultElement.DEFAULT_MESSAGE,
-                [[None, message[: i + 1]]],
-                DefaultElement.DEFAULT_STATUS,
-            )
+        # Was: one yield per character + time.sleep(0.01), which
+        # re-rendered the whole chatbot for every character.
+        # Now: yield the full message once.
+        yield (
+            DefaultElement.DEFAULT_MESSAGE,
+            [[None, message]],
+            DefaultElement.DEFAULT_STATUS,
+        )
 
     def welcome(self):
         yield from self._yield_string(DefaultElement.HELLO_MESSAGE)
@@ -61,17 +63,17 @@ class LLMResponse:
         history: list[list[str]],
         response: StreamingAgentChatResponse,
     ):
-        answer = []
+        answer = ""
         for text in response.response_gen:
-            answer.append(text)
+            answer += text  # incremental, not "".join() every token
             yield (
                 DefaultElement.DEFAULT_MESSAGE,
-                history + [[message, "".join(answer)]],
+                history + [[message, answer]],
                 DefaultElement.ANSWERING_STATUS,
             )
         yield (
             DefaultElement.DEFAULT_MESSAGE,
-            history + [[message, "".join(answer)]],
+            history + [[message, answer]],
             DefaultElement.COMPLETED_STATUS,
         )
 
@@ -97,7 +99,7 @@ class LocalChatbotUI:
         self._variant = "panel"
         self._llm_response = LLMResponse()
 
-    def _get_respone(
+    def _get_response(
         self,
         chat_mode: str,
         message: dict[str, str],
@@ -111,17 +113,21 @@ class LocalChatbotUI:
             for m in self._llm_response.empty_message():
                 yield m
         else:
-            console = sys.stdout
+            # try/finally: the original left sys.stdout pointing
+            # at the logger forever if query() raised.
+            old_stdout = sys.stdout
             sys.stdout = self._logger
-            response = self._pipeline.query(chat_mode, message["text"], chatbot)
-            for m in self._llm_response.stream_response(
-                message["text"], chatbot, response
-            ):
-                yield m
-            sys.stdout = console
+            try:
+                response = self._pipeline.query(chat_mode, message["text"], chatbot)
+                for m in self._llm_response.stream_response(
+                    message["text"], chatbot, response
+                ):
+                    yield m
+            finally:
+                sys.stdout = old_stdout
 
     def _get_confirm_pull_model(self, model: str):
-        if (model in ["gpt-3.5-turbo", "gpt-4"]) or (self._pipeline.check_exist(model)):
+        if (model in OPENAI_MODELS) or (self._pipeline.check_exist(model)):
             self._change_model(model)
             return (
                 gr.update(visible=False),
@@ -135,18 +141,21 @@ class LocalChatbotUI:
         )
 
     def _pull_model(self, model: str, progress=gr.Progress(track_tqdm=True)):
-        if (model not in ["gpt-3.5-turbo", "gpt-4"]) and not (
+        if (model not in OPENAI_MODELS) and not (
             self._pipeline.check_exist(model)
         ):
             response = self._pipeline.pull_model(model)
             if response.status_code == 200:
                 gr.Info(f"Pulling {model}!")
-                for data in response.iter_lines(chunk_size=1):
-                    data = json.loads(data)
-                    if "completed" in data.keys() and "total" in data.keys():
+                for line in response.iter_lines():
+                    if not line:
+                        continue
+                    try:
+                        data = json.loads(line)
+                    except json.JSONDecodeError:
+                        continue
+                    if "completed" in data and "total" in data and data["total"]:
                         progress(data["completed"] / data["total"], desc="Downloading")
-                    else:
-                        progress(0.0)
             else:
                 gr.Warning(f"Model {model} doesn't exist!")
                 return (
@@ -381,7 +390,7 @@ class LocalChatbotUI:
                     demo.load(
                         self._logger.read_logs,
                         outputs=[log],
-                        every=1,
+                        every=5,
                         show_progress="hidden",
                         # scroll_to_output=True,
                     )
@@ -406,7 +415,7 @@ class LocalChatbotUI:
             message.submit(
                 self._upload_document, inputs=[documents, message], outputs=[documents]
             ).then(
-                self._get_respone,
+                self._get_response,
                 inputs=[chat_mode, message, chatbot],
                 outputs=[message, chatbot, status],
             )
