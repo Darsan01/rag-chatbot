@@ -48,4 +48,4 @@ ui = LocalChatbotUI(
     avatar_images=AVATAR_IMAGES,
 )
 
-ui.build().launch(share=args.share, server_name="0.0.0.0", debug=False, show_api=False)
+ui.build().launch(share=args.share, server_name=args.host, debug=False, show_api=False)
