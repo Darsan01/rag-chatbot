@@ -3,7 +3,7 @@ from typing import List
 
 
 class OllamaSettings(BaseModel):
-    llm: str = Field(default="llama3:8b-instruct-q8_0", description="LLM model")
+    llm: str = Field(default="llama3.1:8b-instruct-q8_0", description="LLM model")
     keep_alive: str = Field(default="1h", description="Keep alive time for the server")
     tfs_z: float = Field(default=1.0, description="TFS normalization factor")
     top_k: int = Field(default=40, description="Top k sampling")

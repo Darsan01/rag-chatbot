@@ -9,21 +9,26 @@ from .core import (
 from llama_index.core import Settings
 from llama_index.core.chat_engine.types import StreamingAgentChatResponse
 from llama_index.core.prompts import ChatMessage, MessageRole
+from .setting import RAGSettings
 
 
 class LocalRAGPipeline:
     def __init__(self, host: str = "host.docker.internal") -> None:
         self._host = host
         self._language = "eng"
-        self._model_name = ""
+        self._setting = RAGSettings()
+        self._model_name = self._setting.ollama.llm
         self._system_prompt = get_system_prompt("eng", is_rag_prompt=False)
         self._engine = LocalChatEngine(host=host)
-        self._default_model = LocalRAGModel.set(self._model_name, host=host)
+        self._default_model = LocalRAGModel.set(
+            self._model_name, host=host, setting=self._setting
+        )
         self._query_engine = None
         self._ingestion = LocalDataIngestion()
         self._vector_store = LocalVectorStore(host=host)
         Settings.llm = LocalRAGModel.set(host=host)
         Settings.embed_model = LocalEmbedding.set(host=host)
+        self.set_engine()
 
     def get_model_name(self):
         return self._model_name

@@ -5,7 +5,7 @@ import sys
 import time
 import gradio as gr
 from dataclasses import dataclass
-from typing import ClassVar
+from typing import Any, ClassVar
 from llama_index.core.chat_engine.types import StreamingAgentChatResponse
 from .theme import JS_LIGHT_THEME, CSS
 from ..pipeline import LocalRAGPipeline
@@ -97,13 +97,36 @@ class LocalChatbotUI:
         self._variant = "panel"
         self._llm_response = LLMResponse()
 
+    @staticmethod
+    def _file_path(file_data: Any) -> str:
+        if isinstance(file_data, str):
+            return file_data
+        if isinstance(file_data, dict):
+            path = file_data.get("path") or file_data.get("name")
+        else:
+            path = getattr(file_data, "path", None) or getattr(
+                file_data, "name", None
+            )
+        if not path:
+            raise ValueError(f"Unable to determine uploaded file path: {file_data!r}")
+        return path
+
+    def _ingest_message_files(self, message: dict[str, Any]) -> None:
+        files = message.get("files") or []
+        if not files:
+            return
+        input_files = [self._file_path(file_data) for file_data in files]
+        self._pipeline.store_nodes(input_files=input_files)
+        self._pipeline.set_chat_mode()
+
     def _get_respone(
         self,
         chat_mode: str,
-        message: dict[str, str],
+        message: dict[str, Any],
         chatbot: list[list[str, str]],
         progress=gr.Progress(track_tqdm=True),
     ):
+        self._ingest_message_files(message)
         if self._pipeline.get_model_name() in [None, ""]:
             for m in self._llm_response.set_model():
                 yield m
@@ -289,7 +312,7 @@ class LocalChatbotUI:
                                 choices=[
                                     "llama3.1:8b-instruct-q8_0",
                                 ],
-                                value=None,
+                                value=self._pipeline.get_model_name(),
                                 interactive=True,
                                 allow_custom_value=True,
                             )
@@ -304,7 +327,7 @@ class LocalChatbotUI:
                             documents = gr.Files(
                                 label="Add Documents",
                                 value=[],
-                                file_types=[".txt", ".pdf", ".csv"],
+                                file_types=[".txt", ".pdf", ".csv", ".md", ".json", ".docx"],
                                 file_count="multiple",
                                 height=150,
                                 interactive=True,
@@ -313,7 +336,7 @@ class LocalChatbotUI:
                                 upload_doc_btn = gr.UploadButton(
                                     label="Upload",
                                     value=[],
-                                    file_types=[".txt", ".pdf", ".csv"],
+                                    file_types=[".txt", ".pdf", ".csv", ".md", ".json", ".docx"],
                                     file_count="multiple",
                                     min_width=20,
                                     visible=False,
@@ -345,7 +368,7 @@ class LocalChatbotUI:
                             message = gr.MultimodalTextbox(
                                 value=DefaultElement.DEFAULT_MESSAGE,
                                 placeholder="Enter you message:",
-                                file_types=[".txt", ".pdf", ".csv"],
+                                file_types=[".txt", ".pdf", ".csv", ".md", ".json", ".docx"],
                                 show_label=False,
                                 scale=6,
                                 lines=1,

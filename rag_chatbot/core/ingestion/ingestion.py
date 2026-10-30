@@ -1,9 +1,11 @@
 import re
 import fitz
+from docx import Document as WordDocument
 from llama_index.core import Document, Settings
 from llama_index.core.schema import BaseNode
 from llama_index.core.node_parser import SentenceSplitter
 from dotenv import load_dotenv
+from pathlib import Path
 from typing import Any, List
 from tqdm import tqdm
 from ...setting import RAGSettings
@@ -28,6 +30,29 @@ class LocalDataIngestion:
 
         return normalized_text
 
+    def _extract_text(self, input_file: str) -> str:
+        path = Path(input_file)
+        suffix = path.suffix.lower()
+        if suffix == ".pdf":
+            with fitz.open(input_file) as pdf:
+                return " ".join(page.get_text("text") for page in pdf)
+        if suffix == ".docx":
+            document = WordDocument(input_file)
+            paragraphs = [paragraph.text for paragraph in document.paragraphs]
+            paragraphs.extend(
+                cell.text
+                for table in document.tables
+                for row in table.rows
+                for cell in row.cells
+            )
+            return "\n".join(paragraphs)
+        if suffix in {".txt", ".csv", ".md", ".json"}:
+            return path.read_text(encoding="utf-8", errors="replace")
+        raise ValueError(
+            f"Unsupported document format '{suffix or '<none>'}' for '{path.name}'. "
+            "Supported formats are PDF, DOCX, TXT, CSV, MD, and JSON."
+        )
+
     def store_nodes(
         self,
         input_files: list[str],
@@ -47,17 +72,12 @@ class LocalDataIngestion:
         if embed_nodes:
             Settings.embed_model = embed_model or Settings.embed_model
         for input_file in tqdm(input_files, desc="Ingesting data"):
-            file_name = input_file.strip().split("/")[-1]
+            file_name = Path(input_file).name
             self._ingested_file.append(file_name)
             if file_name in self._node_store:
                 return_nodes.extend(self._node_store[file_name])
             else:
-                document = fitz.open(input_file)
-                all_text = ""
-                for doc_idx, page in enumerate(document):
-                    page_text = page.get_text("text")
-                    page_text = self._filter_text(page_text)
-                    all_text += " " + page_text
+                all_text = self._filter_text(self._extract_text(input_file))
                 document = Document(
                     text=all_text.strip(),
                     metadata={

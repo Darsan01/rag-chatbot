@@ -13,17 +13,17 @@ class LocalRAGModel:
 
     @staticmethod
     def set(
-        model_name: str = "llama3:8b-instruct-q8_0",
+        model_name: str | None = None,
         system_prompt: str | None = None,
         host: str = "host.docker.internal",
         setting: RAGSettings | None = None,
     ):
         setting = setting or RAGSettings()
+        model_name = model_name or setting.ollama.llm
         if model_name in ["gpt-3.5-turbo", "gpt-4", "gpt-4o", "gpt-4-turbo"]:
             return OpenAI(model=model_name, temperature=setting.ollama.temperature)
         else:
             settings_kwargs = {
-                "tfs_z": setting.ollama.tfs_z,
                 "top_k": setting.ollama.top_k,
                 "top_p": setting.ollama.top_p,
                 "repeat_last_n": setting.ollama.repeat_last_n,

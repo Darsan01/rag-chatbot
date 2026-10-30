@@ -17,16 +17,22 @@ class LocalEmbedding:
         setting = setting or RAGSettings()
         model_name = setting.ingestion.embed_llm
         if model_name != "text-embedding-ada-002":
+            device = "cuda" if torch.cuda.is_available() else "cpu"
+            dtype = torch.float16 if device == "cuda" else torch.float32
+            model = AutoModel.from_pretrained(
+                model_name,
+                torch_dtype=dtype,
+                trust_remote_code=True,
+            ).to(device)
             return HuggingFaceEmbedding(
-                model=AutoModel.from_pretrained(
-                    model_name, torch_dtype=torch.float16, trust_remote_code=True
-                ),
+                model=model,
                 tokenizer=AutoTokenizer.from_pretrained(
-                    model_name, torch_dtype=torch.float16
+                    model_name, torch_dtype=dtype
                 ),
                 cache_folder=os.path.join(os.getcwd(), setting.ingestion.cache_folder),
                 trust_remote_code=True,
                 embed_batch_size=setting.ingestion.embed_batch_size,
+                device=device,
             )
         else:
             return OpenAIEmbedding()
