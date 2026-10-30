@@ -245,11 +245,6 @@ class LocalChatbotUI:
         self._pipeline.set_chat_mode()
         gr.Info("System prompt updated!")
 
-    def _change_language(self, language: str):
-        self._pipeline.set_language(language)
-        self._pipeline.set_chat_mode()
-        gr.Info(f"Change language to {language}")
-
     def _undo_chat(self, history: list[list[str, str]]):
         if len(history) > 0:
             history.pop(-1)
@@ -300,12 +295,6 @@ class LocalChatbotUI:
                         with gr.Column():
                             status = gr.Textbox(
                                 label="Status", value="Ready!", interactive=False
-                            )
-                            language = gr.Radio(
-                                label="Language",
-                                choices=["vi", "eng"],
-                                value="eng",
-                                interactive=True,
                             )
                             model = gr.Dropdown(
                                 label="Choose Model:",
@@ -433,7 +422,6 @@ class LocalChatbotUI:
                 inputs=[chat_mode, message, chatbot],
                 outputs=[message, chatbot, status],
             )
-            language.change(self._change_language, inputs=[language])
             model.change(
                 self._get_confirm_pull_model,
                 inputs=[model],

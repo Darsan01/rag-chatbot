@@ -40,7 +40,7 @@ class LocalRAGPipeline:
         return self._language
 
     def set_language(self, language: str):
-        self._language = language
+        self._language = "eng"
 
     def get_system_prompt(self):
         return self._system_prompt
