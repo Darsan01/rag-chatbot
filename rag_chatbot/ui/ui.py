@@ -102,6 +102,7 @@ class LocalChatbotUI:
         self._history_file = Path(os.getcwd()) / "data" / "chat_history.json"
         self._history_file.parent.mkdir(parents=True, exist_ok=True)
         self._histories = self._load_histories()
+        self._active_history = self._create_history()
 
     def _load_histories(self) -> list[dict[str, Any]]:
         if not self._history_file.exists():
@@ -116,6 +117,30 @@ class LocalChatbotUI:
             for history in histories
         ):
             raise ValueError(f"Invalid chat history format in {self._history_file}")
+        changed = False
+        unique_histories = {}
+        for history in histories:
+            if len(history["id"]) != 32 or any(
+                character not in "0123456789abcdef" for character in history["id"]
+            ):
+                history["id"] = uuid.uuid4().hex
+                changed = True
+            key = json.dumps(
+                [history["title"], history["messages"]], ensure_ascii=False
+            )
+            previous = unique_histories.get(key)
+            if previous is None or history.get("updated_at", "") > previous.get(
+                "updated_at", ""
+            ):
+                unique_histories[key] = history
+        if len(unique_histories) != len(histories):
+            histories = list(unique_histories.values())
+            changed = True
+        if changed:
+            temporary_file = self._history_file.with_suffix(".tmp")
+            with temporary_file.open("w", encoding="utf-8") as file:
+                json.dump(histories, file, ensure_ascii=False, indent=2)
+            temporary_file.replace(self._history_file)
         return histories
 
     def _save_histories(self) -> None:
@@ -134,14 +159,17 @@ class LocalChatbotUI:
             )
         ]
 
-    def _new_history(self) -> dict[str, Any]:
+    def _create_history(self) -> dict[str, Any]:
         now = datetime.now(timezone.utc).isoformat()
-        history = {
+        return {
             "id": uuid.uuid4().hex,
             "title": "New chat",
             "messages": [],
             "updated_at": now,
         }
+
+    def _new_history(self) -> dict[str, Any]:
+        history = self._create_history()
         self._histories.append(history)
         self._save_histories()
         return history
@@ -157,7 +185,9 @@ class LocalChatbotUI:
             (item for item in self._histories if item["id"] == history_id), None
         )
         if history is None:
-            history = self._new_history()
+            history = self._create_history()
+            history["id"] = history_id or history["id"]
+            self._histories.append(history)
         history["messages"] = messages
         if history["title"] == "New chat":
             first_message = next((message[0] for message in messages if message[0]), "")
@@ -173,12 +203,23 @@ class LocalChatbotUI:
         )
 
     def _start_new_chat(self):
-        history = self._new_history()
+        history = self._create_history()
         self._pipeline.reset_conversation()
         return (
             DefaultElement.DEFAULT_MESSAGE,
             DefaultElement.DEFAULT_HISTORY,
-            gr.update(choices=self._history_choices(), value=history["id"]),
+            gr.update(choices=self._history_choices(), value=None),
+            history["id"],
+        )
+
+    def _initialize_history_view(self):
+        self._histories = self._load_histories()
+        history = self._create_history()
+        self._pipeline.reset_conversation()
+        return (
+            DefaultElement.DEFAULT_MESSAGE,
+            DefaultElement.DEFAULT_HISTORY,
+            gr.update(choices=self._history_choices(), value=None),
             history["id"],
         )
 
@@ -187,39 +228,54 @@ class LocalChatbotUI:
             return (
                 DefaultElement.DEFAULT_MESSAGE,
                 DefaultElement.DEFAULT_HISTORY,
-                DefaultElement.DEFAULT_STATUS,
                 None,
             )
         history = next(
             (item for item in self._histories if item["id"] == history_id), None
         )
         if history is None:
-            raise ValueError(f"Chat history '{history_id}' was not found")
+            gr.Warning("That conversation is no longer available.")
+            return (
+                DefaultElement.DEFAULT_MESSAGE,
+                DefaultElement.DEFAULT_HISTORY,
+                None,
+            )
         self._pipeline.reset_conversation()
         return (
             DefaultElement.DEFAULT_MESSAGE,
             history["messages"],
-            DefaultElement.DEFAULT_STATUS,
             history["id"],
         )
 
-    def _rename_chat(self, history_id: str | None, title: str):
-        title = title.strip()
+    def _rename_chat(self, history_id: str | None, title: str | None):
+        title = (title or "").strip()
         if not history_id or not title:
-            raise ValueError("Select a chat and enter a non-empty name")
+            gr.Warning("Select a conversation and enter a name before renaming.")
+            return gr.update(), ""
         history = next(
             (item for item in self._histories if item["id"] == history_id), None
         )
         if history is None:
-            raise ValueError(f"Chat history '{history_id}' was not found")
+            gr.Warning("The selected conversation no longer exists.")
+            return gr.update(), ""
         history["title"] = title[:60]
         history["updated_at"] = datetime.now(timezone.utc).isoformat()
         self._save_histories()
         return gr.update(choices=self._history_choices(), value=history_id), ""
 
     def _delete_chat(self, history_id: str | None):
+        if isinstance(history_id, (list, tuple)):
+            history_id = history_id[-1] if history_id else None
+        if isinstance(history_id, dict):
+            history_id = history_id.get("value") or history_id.get("id")
         if not history_id:
-            raise ValueError("Select a chat to delete")
+            gr.Warning("Select a conversation to delete.")
+            return (
+                DefaultElement.DEFAULT_MESSAGE,
+                DefaultElement.DEFAULT_HISTORY,
+                gr.update(choices=self._history_choices(), value=None),
+                None,
+            )
         self._histories = [
             history for history in self._histories if history["id"] != history_id
         ]
@@ -436,18 +492,15 @@ class LocalChatbotUI:
             css=CSS,
         ) as demo:
             gr.Markdown("## Local RAG Chatbot 🤖")
-            current_history = gr.State(
-                self._histories[0]["id"] if self._histories else None
-            )
+            initial_history = self._active_history["messages"]
+            current_history = gr.State(self._active_history["id"])
             with gr.Tab("Chat History"):
                 with gr.Row(variant=self._variant, equal_height=False):
                     with gr.Column(scale=10, variant=self._variant):
                         history_selector = gr.Dropdown(
                             label="Saved conversations",
                             choices=self._history_choices(),
-                            value=self._histories[0]["id"]
-                            if self._histories
-                            else None,
+                            value=None,
                             interactive=True,
                         )
                         new_chat_btn = gr.Button("New chat")
@@ -459,7 +512,7 @@ class LocalChatbotUI:
                     with gr.Column(scale=30, variant=self._variant):
                         history_chatbot = gr.Chatbot(
                             layout="bubble",
-                            value=[],
+                            value=initial_history,
                             height=550,
                             show_copy_button=True,
                             bubble_full_width=False,
@@ -703,6 +756,15 @@ class LocalChatbotUI:
                 self._save_chat_history,
                 inputs=[current_history, history_chatbot],
                 outputs=[history_selector, current_history],
+            )
+            demo.load(
+                self._initialize_history_view,
+                outputs=[
+                    history_message,
+                    history_chatbot,
+                    history_selector,
+                    current_history,
+                ],
             )
 
         return demo
