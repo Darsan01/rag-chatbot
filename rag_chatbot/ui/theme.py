@@ -19,4 +19,9 @@ CSS = """
     background-color: #ff7373;
     color: #FFFFFF;
     }
+
+.history-sidebar-toggle {
+    width: fit-content;
+    margin-bottom: 0.5rem;
+}
 """

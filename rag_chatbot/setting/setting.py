@@ -12,9 +12,13 @@ class OllamaSettings(BaseModel):
     repeat_penalty: float = Field(default=1.1, description="Repeat penalty")
     request_timeout: float = Field(default=300, description="Request timeout")
     port: int = Field(default=11434, description="Port number")
-    context_window: int = Field(default=8000, description="Context window size")
+    context_window: int = Field(
+        default=32768, description="Maximum Ollama context window in tokens"
+    )
     temperature: float = Field(default=0.1, description="Temperature")
-    chat_token_limit: int = Field(default=4000, description="Chat memory limit")
+    chat_token_limit: int = Field(
+        default=24000, description="Maximum conversation memory in tokens"
+    )
 
 
 class RetrieverSettings(BaseModel):

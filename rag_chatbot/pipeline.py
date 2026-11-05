@@ -10,6 +10,8 @@ from llama_index.core import Settings
 from llama_index.core.chat_engine.types import StreamingAgentChatResponse
 from llama_index.core.prompts import ChatMessage, MessageRole
 from .setting import RAGSettings
+from .core.prompt.qa_prompt import CODING_SYSTEM_PROMPT
+import re
 
 
 class LocalRAGPipeline:
@@ -98,6 +100,28 @@ class LocalRAGPipeline:
         self.set_system_prompt(system_prompt)
         self.set_model()
         self.set_engine()
+
+    def set_coding_mode(self):
+        self.set_chat_mode(CODING_SYSTEM_PROMPT)
+
+    @staticmethod
+    def is_coding_message(message: str) -> bool:
+        if not message:
+            return False
+        coding_patterns = (
+            r"```",
+            r"\b(def|class|function|const|let|var|import|from|return|SELECT|CREATE TABLE)\b",
+            r"\b(compiler|runtime error|stack trace|traceback|exception|bug|debug|refactor|"
+            r"function|method|variable|algorithm|api|program|script|code)\b",
+            r"\.(py|js|ts|java|cpp|c|h|cs|go|rs|php|rb|kt|swift|sql|html|css|sh|ps1)\b",
+        )
+        return any(re.search(pattern, message, re.IGNORECASE) for pattern in coding_patterns)
+
+    def set_auto_mode(self, message: str) -> None:
+        if self.is_coding_message(message):
+            self.set_coding_mode()
+        else:
+            self.set_chat_mode()
 
     def set_engine(self):
         self._query_engine = self._engine.set_engine(

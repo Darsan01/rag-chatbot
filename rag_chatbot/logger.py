@@ -8,11 +8,15 @@ class Logger:
         self.filename = os.path.join(os.getcwd(), filename)
         self.terminal = sys.stdout
         self.reset_logs()
-        self.log = open(self.filename, "w")
+        self.log = open(self.filename, "w", encoding="utf-8")
         self.flush()
 
     def write(self, message):
-        self.terminal.write(message)
+        try:
+            self.terminal.write(message)
+        except UnicodeEncodeError:
+            encoding = self.terminal.encoding or "utf-8"
+            self.terminal.write(message.encode(encoding, "replace").decode(encoding))
         self.log.write(message)
 
     def flush(self):
@@ -23,14 +27,14 @@ class Logger:
         return False
 
     def reset_logs(self):
-        with open(self.filename, "w") as file:
+        with open(self.filename, "w", encoding="utf-8") as file:
             file.truncate(0)
 
     def read_logs(self):
         sys.stdout.flush()
 
         # Read the entire content of the log file
-        with open(self.filename, "r") as f:
+        with open(self.filename, "r", encoding="utf-8") as f:
             log_content = f.readlines()
 
         # Filter out lines containing null characters

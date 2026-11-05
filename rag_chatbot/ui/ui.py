@@ -328,14 +328,17 @@ class LocalChatbotUI:
             for m in self._llm_response.empty_message():
                 yield m
         else:
+            self._pipeline.set_auto_mode(text)
             console = sys.stdout
             sys.stdout = self._logger
-            response = self._pipeline.query(chat_mode, text, chatbot)
-            for m in self._llm_response.stream_response(
-                text, chatbot, response
-            ):
-                yield m
-            sys.stdout = console
+            try:
+                response = self._pipeline.query(chat_mode, text, chatbot)
+                for m in self._llm_response.stream_response(
+                    text, chatbot, response
+                ):
+                    yield m
+            finally:
+                sys.stdout = console
 
     def _get_history_response(
         self,
@@ -481,6 +484,11 @@ class LocalChatbotUI:
         label = "Hide Setting" if state else "Show Setting"
         return (label, gr.update(visible=state), state)
 
+    def _toggle_history_sidebar(self, state):
+        state = not state
+        label = "☰ Hide history" if state else "☰ Show history"
+        return label, gr.update(visible=state), state
+
     def _welcome(self):
         for m in self._llm_response.welcome():
             yield m
@@ -495,8 +503,14 @@ class LocalChatbotUI:
             initial_history = self._active_history["messages"]
             current_history = gr.State(self._active_history["id"])
             with gr.Tab("Chat History"):
+                history_sidebar_state = gr.State(True)
+                history_sidebar_toggle = gr.Button(
+                    "☰ Hide history", elem_classes=["history-sidebar-toggle"]
+                )
                 with gr.Row(variant=self._variant, equal_height=False):
-                    with gr.Column(scale=10, variant=self._variant):
+                    with gr.Column(
+                        scale=10, variant=self._variant
+                    ) as history_sidebar:
                         history_selector = gr.Dropdown(
                             label="Saved conversations",
                             choices=self._history_choices(),
@@ -554,6 +568,7 @@ class LocalChatbotUI:
                                 label="Choose Model:",
                                 choices=[
                                     "llama3.2:3b",
+                                    "qwen2.5-coder:7b",
                                 ],
                                 value=self._pipeline.get_model_name(),
                                 interactive=True,
@@ -717,6 +732,15 @@ class LocalChatbotUI:
                     history_chatbot,
                     history_selector,
                     current_history,
+                ],
+            )
+            history_sidebar_toggle.click(
+                self._toggle_history_sidebar,
+                inputs=[history_sidebar_state],
+                outputs=[
+                    history_sidebar_toggle,
+                    history_sidebar,
+                    history_sidebar_state,
                 ],
             )
             history_selector.change(
