@@ -13,6 +13,7 @@ from llama_index.core.chat_engine.types import StreamingAgentChatResponse
 from .theme import JS_LIGHT_THEME, CSS
 from ..pipeline import LocalRAGPipeline
 from ..logger import Logger
+from ..speech import LocalSpeechRecognizer
 
 
 @dataclass
@@ -99,6 +100,8 @@ class LocalChatbotUI:
         ]
         self._variant = "panel"
         self._llm_response = LLMResponse()
+        self._speech_recognizer = LocalSpeechRecognizer()
+        self._speech_recognizer.warm_up_async()
         self._history_file = Path(os.getcwd()) / "data" / "chat_history.json"
         self._history_file.parent.mkdir(parents=True, exist_ok=True)
         self._histories = self._load_histories()
@@ -154,6 +157,28 @@ class LocalChatbotUI:
             (history["title"], history["id"])
             for history in sorted(
                 self._histories,
+                key=lambda item: item.get("updated_at", ""),
+                reverse=True,
+            )
+        ]
+
+    def _search_histories(self, query: str | None) -> list[tuple[str, str]]:
+        query = (query or "").strip().casefold()
+        histories = self._histories
+        if query:
+            histories = [
+                history
+                for history in histories
+                if query in history["title"].casefold()
+                or any(
+                    query in str(message[0] or "").casefold()
+                    for message in history["messages"]
+                )
+            ]
+        return [
+            (history["title"], history["id"])
+            for history in sorted(
+                histories,
                 key=lambda item: item.get("updated_at", ""),
                 reverse=True,
             )
@@ -310,6 +335,46 @@ class LocalChatbotUI:
         self._pipeline.store_nodes(input_files=input_files)
         self._pipeline.set_chat_mode()
 
+    def _transcribe_audio(self, audio_input: Any, session_number: int):
+        next_session = (session_number or 0) + 1
+        if audio_input is None:
+            gr.Warning("No new microphone audio was recorded.")
+            return {"text": "", "files": []}, "Ready", "", next_session
+        if isinstance(audio_input, str) and audio_input.startswith("data:"):
+            self._logger.write(
+                f"Voice transcription started: payload_chars={len(audio_input)}\n"
+            )
+        elif isinstance(audio_input, (str, Path)):
+            path = Path(audio_input)
+            if not path.is_file():
+                gr.Warning("The recorded audio file is unavailable.")
+                return {"text": "", "files": []}, "Ready", "", next_session
+            self._logger.write(
+                f"Voice transcription started: file={path.name}, "
+                f"bytes={path.stat().st_size}\n"
+            )
+        else:
+            try:
+                sample_rate, samples = audio_input
+                self._logger.write(
+                    f"Voice transcription started: samples={len(samples)}, "
+                    f"sample_rate={sample_rate}\n"
+                )
+            except (TypeError, ValueError) as error:
+                self._logger.write(f"Voice input format invalid: {error}\n")
+                gr.Warning("The microphone returned an invalid audio recording.")
+                return {"text": "", "files": []}, "Ready", "", next_session
+        try:
+            text = self._speech_recognizer.transcribe(audio_input)
+        except (FileNotFoundError, RuntimeError, ValueError, TypeError) as error:
+            self._logger.write(f"Voice transcription failed: {error}\n")
+            gr.Warning("Voice processing failed. Please try again.")
+            return {"text": "", "files": []}, "Ready", "", next_session
+        if not text:
+            gr.Warning("No speech was detected. Please try recording again.")
+        self._logger.write(f"Voice transcription completed: characters={len(text)}\n")
+        return {"text": text, "files": []}, "Ready", "", next_session
+
     def _get_respone(
         self,
         chat_mode: str,
@@ -329,6 +394,7 @@ class LocalChatbotUI:
                 yield m
         else:
             self._pipeline.set_auto_mode(text)
+            self._logger.write("RAG request started from a new chat message.\n")
             console = sys.stdout
             sys.stdout = self._logger
             try:
@@ -337,6 +403,7 @@ class LocalChatbotUI:
                     text, chatbot, response
                 ):
                     yield m
+                self._logger.write("RAG response received.\n")
             finally:
                 sys.stdout = console
 
@@ -499,32 +566,55 @@ class LocalChatbotUI:
             js=JS_LIGHT_THEME,
             css=CSS,
         ) as demo:
-            gr.Markdown("## Local RAG Chatbot 🤖")
+            gr.Markdown(
+                """
+                <header class="app-header">
+                    <div class="brand-mark">✦</div>
+                    <div>
+                        <h1>Local RAG Chatbot</h1>
+                        <p>Your private AI workspace</p>
+                    </div>
+                    <span class="status-pill"><i></i> Local &amp; private</span>
+                </header>
+                """
+            )
             initial_history = self._active_history["messages"]
             current_history = gr.State(self._active_history["id"])
-            with gr.Tab("Chat History"):
+            with gr.Tab("Chat"):
                 history_sidebar_state = gr.State(True)
                 history_sidebar_toggle = gr.Button(
-                    "☰ Hide history", elem_classes=["history-sidebar-toggle"]
+                    "☰  History", elem_classes=["history-sidebar-toggle"]
                 )
                 with gr.Row(variant=self._variant, equal_height=False):
                     with gr.Column(
                         scale=10, variant=self._variant
                     ) as history_sidebar:
                         history_selector = gr.Dropdown(
-                            label="Saved conversations",
+                            label="Conversations",
                             choices=self._history_choices(),
                             value=None,
                             interactive=True,
+                            elem_id="history-selector",
                         )
-                        new_chat_btn = gr.Button("New chat")
+                        history_search = gr.Textbox(
+                            placeholder="Search conversations...",
+                            show_label=False,
+                            elem_id="history-search",
+                        )
+                        new_chat_btn = gr.Button(
+                            "＋  New chat",
+                            elem_id="new-chat-button",
+                            elem_classes=["primary-action"],
+                        )
                         rename_input = gr.Textbox(
                             label="New chat name", placeholder="Enter a name"
                         )
-                        rename_chat_btn = gr.Button("Rename chat")
-                        delete_chat_btn = gr.Button("Delete chat")
+                        with gr.Row():
+                            rename_chat_btn = gr.Button("Rename", elem_classes=["secondary-action"])
+                            delete_chat_btn = gr.Button("Delete", elem_classes=["danger-action"])
                     with gr.Column(scale=30, variant=self._variant):
                         history_chatbot = gr.Chatbot(
+                            elem_id="history-chatbot",
                             layout="bubble",
                             value=initial_history,
                             height=550,
@@ -539,9 +629,17 @@ class LocalChatbotUI:
                                 show_label=False,
                                 interactive=True,
                             )
+                            voice_launcher = gr.HTML(
+                                """
+                                <button id="voice-launcher" type="button"
+                                    aria-label="Open voice mode">🎙</button>
+                                """,
+                                elem_id="voice-launcher-container",
+                            )
                             history_message = gr.MultimodalTextbox(
+                                elem_id="history-message-input",
                                 value=DefaultElement.DEFAULT_MESSAGE,
-                                placeholder="Enter your message:",
+                                placeholder="Message your local assistant...",
                                 file_types=[
                                     ".txt",
                                     ".pdf",
@@ -554,7 +652,20 @@ class LocalChatbotUI:
                                 scale=6,
                                 lines=1,
                             )
-            with gr.Tab("Interface"):
+                        voice_input = gr.Textbox(
+                            show_label=False,
+                            elem_id="voice-input",
+                            visible=False,
+                        )
+                        voice_status = gr.Textbox(
+                            value="Ready",
+                            show_label=False,
+                            elem_id="voice-status",
+                            visible=False,
+                        )
+                        voice_audio_state = gr.State(0)
+                        voice_panel = gr.HTML(elem_id="voice-panel")
+            with gr.Tab("Workspace"):
                 sidebar_state = gr.State(True)
                 with gr.Row(variant=self._variant, equal_height=False):
                     with gr.Column(
@@ -562,10 +673,10 @@ class LocalChatbotUI:
                     ) as setting:
                         with gr.Column():
                             status = gr.Textbox(
-                                label="Status", value="Ready!", interactive=False
+                                label="Assistant status", value="Ready!", interactive=False
                             )
                             model = gr.Dropdown(
-                                label="Choose Model:",
+                                label="Model",
                                 choices=[
                                     "llama3.2:3b",
                                     "qwen2.5-coder:7b",
@@ -583,7 +694,7 @@ class LocalChatbotUI:
                                 )
 
                             documents = gr.Files(
-                                label="Add Documents",
+                                label="Knowledge files",
                                 value=[],
                                 file_types=[".txt", ".pdf", ".csv", ".md", ".json", ".docx"],
                                 file_count="multiple",
@@ -605,6 +716,7 @@ class LocalChatbotUI:
 
                     with gr.Column(scale=30, variant=self._variant):
                         chatbot = gr.Chatbot(
+                            elem_id="chatbot-main",
                             layout="bubble",
                             value=[],
                             height=550,
@@ -624,6 +736,7 @@ class LocalChatbotUI:
                                 allow_custom_value=False,
                             )
                             message = gr.MultimodalTextbox(
+                                elem_id="message-input",
                                 value=DefaultElement.DEFAULT_MESSAGE,
                                 placeholder="Enter you message:",
                                 file_types=[".txt", ".pdf", ".csv", ".md", ".json", ".docx"],
@@ -633,16 +746,16 @@ class LocalChatbotUI:
                             )
                         with gr.Row(variant=self._variant):
                             ui_btn = gr.Button(
-                                value="Hide Setting"
+                                value="Hide workspace"
                                 if sidebar_state.value
-                                else "Show Setting",
+                                else "Show workspace",
                                 min_width=20,
                             )
                             undo_btn = gr.Button(value="Undo", min_width=20)
-                            clear_btn = gr.Button(value="Clear", min_width=20)
+                            clear_btn = gr.Button(value="Clear chat", min_width=20)
                             reset_btn = gr.Button(value="Reset", min_width=20)
 
-            with gr.Tab("Setting"):
+            with gr.Tab("Settings"):
                 with gr.Row(variant=self._variant, equal_height=False):
                     with gr.Column():
                         system_prompt = gr.Textbox(
@@ -654,7 +767,7 @@ class LocalChatbotUI:
                         )
                         sys_prompt_btn = gr.Button(value="Set System Prompt")
 
-            with gr.Tab("Output"):
+            with gr.Tab("Diagnostics"):
                 with gr.Row(variant=self._variant):
                     log = gr.Code(
                         label="", language="markdown", interactive=False, lines=30
@@ -752,6 +865,11 @@ class LocalChatbotUI:
                     current_history,
                 ],
             )
+            history_search.input(
+                lambda query: gr.update(choices=self._search_histories(query)),
+                inputs=[history_search],
+                outputs=[history_selector],
+            )
             rename_chat_btn.click(
                 self._rename_chat,
                 inputs=[history_selector, rename_input],
@@ -780,6 +898,16 @@ class LocalChatbotUI:
                 self._save_chat_history,
                 inputs=[current_history, history_chatbot],
                 outputs=[history_selector, current_history],
+            )
+            voice_input.input(
+                self._transcribe_audio,
+                inputs=[voice_input, voice_audio_state],
+                outputs=[
+                    history_message,
+                    voice_status,
+                    voice_panel,
+                    voice_audio_state,
+                ],
             )
             demo.load(
                 self._initialize_history_view,

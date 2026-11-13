@@ -25,6 +25,8 @@ dependencies = [
     "pandas>=2.2.3,<3",
     "sentence-transformers>=3.2.0,<4",
     "pydantic==2.8.2",
+    "soundfile>=0.12.1,<1",
+    "av>=12,<19",
 ]
 
 [dependency-groups]
