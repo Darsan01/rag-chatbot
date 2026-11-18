@@ -516,7 +516,24 @@ html, body {
 #history-chatbot .message.user {
     background: var(--surface-muted) !important;
     border: 0 !important;
+    width: fit-content !important;
+    min-width: 44px !important;
     max-width: 78% !important;
+    margin-left: auto !important;
+    overflow-wrap: normal !important;
+    word-break: normal !important;
+}
+#history-chatbot .message-row.user-row,
+#history-chatbot .flex-wrap.user {
+    width: auto !important;
+    max-width: 78% !important;
+    margin-left: auto !important;
+}
+#history-chatbot .flex-wrap.user .message.user p {
+    white-space: normal !important;
+    overflow-wrap: normal !important;
+    word-break: normal !important;
+    writing-mode: horizontal-tb !important;
 }
 #history-chatbot pre {
     border-radius: 7px !important;
@@ -839,14 +856,15 @@ body {
     direction: ltr !important;
     text-align: left !important;
     unicode-bidi: isolate !important;
-    white-space: pre-wrap !important;
-    height: 42px !important;
-    min-height: 42px !important;
-    max-height: 42px !important;
-    line-height: 20px !important;
-    padding: 11px 12px 9px !important;
+    white-space: nowrap !important;
+    height: 62px !important;
+    min-height: 62px !important;
+    max-height: 62px !important;
+    line-height: 62px !important;
+    padding: 0 12px !important;
     box-sizing: border-box !important;
-    overflow-y: auto !important;
+    overflow-x: auto !important;
+    overflow-y: hidden !important;
     resize: none !important;
 }
 @media (min-width: 761px) {
@@ -888,32 +906,11 @@ body {
     max-height: none !important;
     overflow: visible !important;
 }
-/* Gradio expands a MultimodalTextbox to 114 px after an upload.
-   Keep a compact, but stable, uploaded state even when thumbnail DOM timing differs. */
 #history-message-input {
-    height: 114px !important;
-    min-height: 114px !important;
-    max-height: 114px !important;
-    overflow: visible !important;
-}
-#history-message-input .full-container {
-    height: 114px !important;
-    min-height: 114px !important;
-    max-height: 114px !important;
-    overflow: visible !important;
-}
-#history-message-input .thumbnails {
-    height: 52px !important;
-    min-height: 52px !important;
-}
-#history-message-input .input-container {
     height: 62px !important;
     min-height: 62px !important;
-}
-.message-composer {
-    height: 140px !important;
-    min-height: 140px !important;
-    flex-basis: 140px !important;
+    max-height: 62px !important;
+    overflow: hidden !important;
 }
 #history-message-input:has(.thumbnail-item) .full-container {
     height: 114px !important;
