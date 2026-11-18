@@ -11,6 +11,7 @@ from llama_index.core.chat_engine.types import StreamingAgentChatResponse
 from llama_index.core.prompts import ChatMessage, MessageRole
 from .setting import RAGSettings
 from .core.prompt.qa_prompt import CODING_SYSTEM_PROMPT
+from .image import LocalImageService
 import re
 
 
@@ -28,6 +29,7 @@ class LocalRAGPipeline:
         self._query_engine = None
         self._ingestion = LocalDataIngestion()
         self._vector_store = LocalVectorStore(host=host)
+        self._image_service = LocalImageService(host=host, setting=self._setting)
         Settings.llm = LocalRAGModel.set(host=host)
         Settings.embed_model = LocalEmbedding.set(host=host)
         self.set_engine()
@@ -115,7 +117,9 @@ class LocalRAGPipeline:
             r"function|method|variable|algorithm|api|program|script|code)\b",
             r"\.(py|js|ts|java|cpp|c|h|cs|go|rs|php|rb|kt|swift|sql|html|css|sh|ps1)\b",
         )
-        return any(re.search(pattern, message, re.IGNORECASE) for pattern in coding_patterns)
+        return any(
+            re.search(pattern, message, re.IGNORECASE) for pattern in coding_patterns
+        )
 
     def set_auto_mode(self, message: str) -> None:
         if self.is_coding_message(message):
@@ -135,11 +139,23 @@ class LocalRAGPipeline:
         for chat in chatbot:
             if chat[0]:
                 history.append(ChatMessage(role=MessageRole.USER, content=chat[0]))
-                history.append(ChatMessage(role=MessageRole.ASSISTANT, content=chat[1]))
+                assistant_content = (
+                    chat[1] if isinstance(chat[1], str) else "Generated an image."
+                )
+                history.append(
+                    ChatMessage(role=MessageRole.ASSISTANT, content=assistant_content)
+                )
         return history
 
     def query(
         self, mode: str, message: str, chatbot: list[list[str]]
     ) -> StreamingAgentChatResponse:
+        self._image_service.release_generator()
         history = self.get_history(chatbot)
         return self._query_engine.stream_chat(message, history)
+
+    def describe_image(self, image_path: str | list[str], prompt: str):
+        return self._image_service.describe(image_path, prompt)
+
+    def generate_image(self, prompt: str) -> str:
+        return self._image_service.generate(prompt)

@@ -1,5 +1,6 @@
 import re
 import fitz
+import pandas as pd
 from docx import Document as WordDocument
 from llama_index.core import Document, Settings
 from llama_index.core.schema import BaseNode
@@ -46,11 +47,49 @@ class LocalDataIngestion:
                 for cell in row.cells
             )
             return "\n".join(paragraphs)
-        if suffix in {".txt", ".csv", ".md", ".json"}:
+        if suffix == ".xlsx":
+            sheets = pd.read_excel(path, sheet_name=None)
+            return "\n\n".join(
+                f"Sheet: {name}\n{dataframe.to_csv(index=False)}"
+                for name, dataframe in sheets.items()
+            )
+        if suffix in {
+            ".txt",
+            ".csv",
+            ".md",
+            ".json",
+            ".py",
+            ".js",
+            ".ts",
+            ".tsx",
+            ".jsx",
+            ".java",
+            ".c",
+            ".cpp",
+            ".h",
+            ".hpp",
+            ".cs",
+            ".go",
+            ".rs",
+            ".php",
+            ".rb",
+            ".kt",
+            ".swift",
+            ".sql",
+            ".html",
+            ".css",
+            ".scss",
+            ".sh",
+            ".ps1",
+            ".yaml",
+            ".yml",
+            ".toml",
+            ".xml",
+        }:
             return path.read_text(encoding="utf-8", errors="replace")
         raise ValueError(
             f"Unsupported document format '{suffix or '<none>'}' for '{path.name}'. "
-            "Supported formats are PDF, DOCX, TXT, CSV, MD, and JSON."
+            "Supported formats are PDF, DOCX, XLSX, text, and source code."
         )
 
     def store_nodes(
@@ -78,6 +117,8 @@ class LocalDataIngestion:
                 return_nodes.extend(self._node_store[file_name])
             else:
                 all_text = self._filter_text(self._extract_text(input_file))
+                if not all_text.strip():
+                    raise ValueError(f"No readable text was found in '{file_name}'.")
                 document = Document(
                     text=all_text.strip(),
                     metadata={

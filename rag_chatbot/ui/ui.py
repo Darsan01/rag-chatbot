@@ -1,6 +1,7 @@
 import os
 import shutil
 import json
+import re
 import sys
 import time
 import uuid
@@ -14,6 +15,62 @@ from .theme import JS_LIGHT_THEME, CSS
 from ..pipeline import LocalRAGPipeline
 from ..logger import Logger
 from ..speech import LocalSpeechRecognizer
+
+
+IMAGE_SUFFIXES = {".jpg", ".jpeg", ".png", ".webp", ".bmp", ".gif"}
+MEDIA_SUFFIXES = {
+    ".mp3",
+    ".wav",
+    ".m4a",
+    ".flac",
+    ".ogg",
+    ".aac",
+    ".mp4",
+    ".mov",
+    ".avi",
+    ".mkv",
+    ".webm",
+    ".m4v",
+}
+DOCUMENT_SUFFIXES = {
+    ".pdf",
+    ".docx",
+    ".txt",
+    ".csv",
+    ".xlsx",
+    ".md",
+    ".json",
+    ".py",
+    ".js",
+    ".ts",
+    ".tsx",
+    ".jsx",
+    ".java",
+    ".c",
+    ".cpp",
+    ".h",
+    ".hpp",
+    ".cs",
+    ".go",
+    ".rs",
+    ".php",
+    ".rb",
+    ".kt",
+    ".swift",
+    ".sql",
+    ".html",
+    ".css",
+    ".scss",
+    ".sh",
+    ".ps1",
+    ".yaml",
+    ".yml",
+    ".toml",
+    ".xml",
+}
+SUPPORTED_SUFFIXES = IMAGE_SUFFIXES | MEDIA_SUFFIXES | DOCUMENT_SUFFIXES
+CHAT_FILE_TYPES = sorted(SUPPORTED_SUFFIXES)
+MAX_FILE_SIZE = 25 * 1024 * 1024
 
 
 @dataclass
@@ -221,9 +278,7 @@ class LocalChatbotUI:
         history["updated_at"] = datetime.now(timezone.utc).isoformat()
         self._save_histories()
         return (
-            gr.update(
-                choices=self._history_choices(), value=history["id"]
-            ),
+            gr.update(choices=self._history_choices(), value=history["id"]),
             history["id"],
         )
 
@@ -320,9 +375,7 @@ class LocalChatbotUI:
         if isinstance(file_data, dict):
             path = file_data.get("path") or file_data.get("name")
         else:
-            path = getattr(file_data, "path", None) or getattr(
-                file_data, "name", None
-            )
+            path = getattr(file_data, "path", None) or getattr(file_data, "name", None)
         if not path:
             raise ValueError(f"Unable to determine uploaded file path: {file_data!r}")
         return path
@@ -331,9 +384,98 @@ class LocalChatbotUI:
         files = message.get("files") or []
         if not files:
             return
-        input_files = [self._file_path(file_data) for file_data in files]
+        input_files = [
+            path
+            for file_data in files
+            if (path := self._file_path(file_data))
+            and Path(path).suffix.lower() in DOCUMENT_SUFFIXES
+        ]
+        if not input_files:
+            return
         self._pipeline.store_nodes(input_files=input_files)
         self._pipeline.set_chat_mode()
+
+    def _message_images(self, message: dict[str, Any]) -> list[str]:
+        return [
+            path
+            for file_data in message.get("files") or []
+            if (path := self._file_path(file_data))
+            and Path(path).suffix.lower() in IMAGE_SUFFIXES
+        ]
+
+    def _message_media(self, message: dict[str, Any]) -> list[str]:
+        return [
+            path
+            for file_data in message.get("files") or []
+            if (path := self._file_path(file_data))
+            and Path(path).suffix.lower() in MEDIA_SUFFIXES
+        ]
+
+    def _validate_message_files(self, message: dict[str, Any]) -> list[str]:
+        paths = [self._file_path(file_data) for file_data in message.get("files") or []]
+        for file_path in paths:
+            path = Path(file_path)
+            suffix = path.suffix.lower()
+            if suffix not in SUPPORTED_SUFFIXES:
+                raise ValueError(
+                    f"'{path.name}' is not supported. Upload a document, spreadsheet, "
+                    "image, audio, video, or source-code file."
+                )
+            if not path.is_file():
+                raise FileNotFoundError(f"Attachment was not found: {path.name}")
+            if path.stat().st_size > MAX_FILE_SIZE:
+                raise ValueError(f"'{path.name}' exceeds the 25 MB file-size limit.")
+        return paths
+
+    @staticmethod
+    def _attachment_summary(paths: list[str]) -> str:
+        if not paths:
+            return ""
+        names = ", ".join(Path(path).name for path in paths)
+        return f"\n\nAttachments: {names}"
+
+    @staticmethod
+    def _image_generation_prompt(message: str) -> str | None:
+        text = message.strip()
+        if text.lower() == "/image":
+            return ""
+        if text.lower().startswith("/image "):
+            return text[7:].strip()
+        if re.match(
+            r"^(?:please\s+)?(?:generate|create|draw|make)\s+(?:it|that)$",
+            text,
+            re.IGNORECASE,
+        ):
+            return ""
+        match = re.match(
+            r"^(?:please\s+)?(?:generate|create|draw|make)\s+(?:me\s+)?"
+            r"(?:(?:an?|the|this)\s+)?(?:image|picture|photo|illustration)"
+            r"(?:\s+(?:of|showing|for)\s+|\s*:\s*)?(.*)$",
+            text,
+            re.IGNORECASE,
+        )
+        return match.group(1).strip() if match else None
+
+    @classmethod
+    def _resolve_image_generation_prompt(
+        cls, message: str, chatbot: list[list[Any]]
+    ) -> str | None:
+        prompt = cls._image_generation_prompt(message)
+        if prompt is None:
+            return None
+        if prompt:
+            return prompt.strip(" \"'\u2018\u2019\u201c\u201d")
+
+        for chat in reversed(chatbot):
+            if not chat or not isinstance(chat[0], str):
+                continue
+            candidate = chat[0].strip()
+            if not candidate or "[Image:" in candidate:
+                continue
+            if cls._image_generation_prompt(candidate) is not None:
+                continue
+            return candidate.strip(" \"'\u2018\u2019\u201c\u201d")
+        return ""
 
     def _transcribe_audio(self, audio_input: Any, session_number: int):
         next_session = (session_number or 0) + 1
@@ -384,23 +526,153 @@ class LocalChatbotUI:
         progress=gr.Progress(track_tqdm=True),
     ):
         message = message or {}
-        self._ingest_message_files(message)
-        text = message.get("text") or ""
-        if self._pipeline.get_model_name() in [None, ""]:
+        text = (message.get("text") or "").strip()
+        try:
+            attachment_paths = self._validate_message_files(message)
+        except (FileNotFoundError, ValueError) as error:
+            yield (
+                DefaultElement.DEFAULT_MESSAGE,
+                chatbot + [[text or "Attachment", f"Upload failed: {error}"]],
+                "Upload failed",
+            )
+            return
+
+        image_paths = self._message_images(message)
+        media_paths = self._message_media(message)
+        document_paths = [
+            path
+            for path in attachment_paths
+            if Path(path).suffix.lower() in DOCUMENT_SUFFIXES
+        ]
+        attachment_summary = self._attachment_summary(attachment_paths)
+        display_text = (text or "Review the attached file") + attachment_summary
+        generation_prompt = self._resolve_image_generation_prompt(text, chatbot)
+        if image_paths:
+            prompt = text.strip() or "Describe this image in detail."
+            user_message = prompt + attachment_summary
+            answer = []
+            try:
+                for response_text in self._pipeline.describe_image(image_paths, prompt):
+                    answer.append(response_text)
+                    yield (
+                        DefaultElement.DEFAULT_MESSAGE,
+                        chatbot + [[user_message, "".join(answer)]],
+                        "Analyzing image...",
+                    )
+            except (FileNotFoundError, RuntimeError, OSError) as error:
+                self._logger.write(f"Image analysis failed: {error}\n")
+                yield (
+                    DefaultElement.DEFAULT_MESSAGE,
+                    chatbot + [[user_message, f"Image analysis failed: {error}"]],
+                    "Image analysis failed",
+                )
+                return
+            yield (
+                DefaultElement.DEFAULT_MESSAGE,
+                chatbot + [[user_message, "".join(answer)]],
+                DefaultElement.COMPLETED_STATUS,
+            )
+        elif media_paths:
+            yield (
+                DefaultElement.DEFAULT_MESSAGE,
+                chatbot + [[display_text, None]],
+                "Transcribing media...",
+            )
+            try:
+                transcripts = [
+                    self._speech_recognizer.transcribe(media_path)
+                    for media_path in media_paths
+                ]
+                transcript = "\n\n".join(
+                    f"Transcript from {Path(path).name}:\n{content}"
+                    for path, content in zip(media_paths, transcripts)
+                    if content
+                )
+                if not transcript:
+                    raise ValueError("No speech could be detected in the media file.")
+                query_text = (
+                    f"{transcript}\n\nUser request: "
+                    f"{text or 'Summarize this media clearly.'}"
+                )
+                self._pipeline.set_chat_mode()
+                response = self._pipeline.query(chat_mode, query_text, chatbot)
+                for item in self._llm_response.stream_response(
+                    display_text, chatbot, response
+                ):
+                    yield item
+            except (FileNotFoundError, RuntimeError, ValueError, OSError) as error:
+                self._logger.write(f"Media processing failed: {error}\n")
+                yield (
+                    DefaultElement.DEFAULT_MESSAGE,
+                    chatbot + [[display_text, f"Media processing failed: {error}"]],
+                    "Media processing failed",
+                )
+        elif generation_prompt:
+            try:
+                yield (
+                    DefaultElement.DEFAULT_MESSAGE,
+                    chatbot + [[text, None]],
+                    "Generating image...",
+                )
+                output_path = self._pipeline.generate_image(generation_prompt)
+                yield (
+                    DefaultElement.DEFAULT_MESSAGE,
+                    chatbot + [[text, (output_path,)]],
+                    "Image generated",
+                )
+            except (RuntimeError, ValueError, OSError) as error:
+                self._logger.write(f"Image generation failed: {error}\n")
+                yield (
+                    DefaultElement.DEFAULT_MESSAGE,
+                    chatbot + [[text, f"Image generation failed: {error}"]],
+                    "Image generation failed",
+                )
+        elif generation_prompt == "":
+            yield (
+                DefaultElement.DEFAULT_MESSAGE,
+                chatbot
+                + [
+                    [
+                        text,
+                        "Tell me what you want the image to show, or use "
+                        "`/image your description`.",
+                    ]
+                ],
+                "Image prompt required",
+            )
+        elif self._pipeline.get_model_name() in [None, ""]:
             for m in self._llm_response.set_model():
                 yield m
-        elif not text:
+        elif not text and not document_paths:
             for m in self._llm_response.empty_message():
                 yield m
         else:
-            self._pipeline.set_auto_mode(text)
+            if document_paths:
+                yield (
+                    DefaultElement.DEFAULT_MESSAGE,
+                    chatbot + [[display_text, None]],
+                    "Indexing attachments...",
+                )
+                try:
+                    self._ingest_message_files(message)
+                except (OSError, RuntimeError, ValueError) as error:
+                    self._logger.write(f"Document processing failed: {error}\n")
+                    yield (
+                        DefaultElement.DEFAULT_MESSAGE,
+                        chatbot
+                        + [[display_text, f"Document processing failed: {error}"]],
+                        "Document processing failed",
+                    )
+                    return
+            query_text = text or "Summarize the attached file clearly."
+            self._pipeline.set_auto_mode(query_text)
             self._logger.write("RAG request started from a new chat message.\n")
             console = sys.stdout
             sys.stdout = self._logger
             try:
-                response = self._pipeline.query(chat_mode, text, chatbot)
+                response = self._pipeline.query(chat_mode, query_text, chatbot)
                 for m in self._llm_response.stream_response(
-                    text, chatbot, response
+                    display_text, chatbot, response
                 ):
                     yield m
                 self._logger.write("RAG response received.\n")
@@ -414,10 +686,10 @@ class LocalChatbotUI:
         chatbot: list[list[str, str]],
         history_id: str | None,
     ):
-        for response_message, response_history, _ in self._get_respone(
+        for response_message, response_history, response_status in self._get_respone(
             chat_mode, message, chatbot, history_id
         ):
-            yield response_message, response_history
+            yield response_message, response_history, response_status
 
     def _get_confirm_pull_model(self, model: str):
         if (model in ["gpt-3.5-turbo", "gpt-4"]) or (self._pipeline.check_exist(model)):
@@ -569,10 +841,10 @@ class LocalChatbotUI:
             gr.Markdown(
                 """
                 <header class="app-header">
-                    <div class="brand-mark">✦</div>
+                    <div class="brand-mark">R</div>
                     <div>
-                        <h1>Local RAG Chatbot</h1>
-                        <p>Your private AI workspace</p>
+                        <h1>Local Assistant</h1>
+                        <p>Private and on-device</p>
                     </div>
                     <span class="status-pill"><i></i> Local &amp; private</span>
                 </header>
@@ -585,15 +857,22 @@ class LocalChatbotUI:
                 history_sidebar_toggle = gr.Button(
                     "☰  History", elem_classes=["history-sidebar-toggle"]
                 )
-                with gr.Row(variant=self._variant, equal_height=False):
+                with gr.Row(
+                    variant=self._variant,
+                    equal_height=False,
+                    elem_classes=["app-shell"],
+                ):
                     with gr.Column(
-                        scale=10, variant=self._variant
+                        scale=10,
+                        variant=self._variant,
+                        elem_classes=["conversation-sidebar"],
                     ) as history_sidebar:
                         history_selector = gr.Dropdown(
                             label="Conversations",
                             choices=self._history_choices(),
                             value=None,
                             interactive=True,
+                            show_label=False,
                             elem_id="history-selector",
                         )
                         history_search = gr.Textbox(
@@ -607,29 +886,46 @@ class LocalChatbotUI:
                             elem_classes=["primary-action"],
                         )
                         rename_input = gr.Textbox(
-                            label="New chat name", placeholder="Enter a name"
+                            label="New chat name",
+                            placeholder="Rename conversation",
+                            show_label=False,
                         )
                         with gr.Row():
-                            rename_chat_btn = gr.Button("Rename", elem_classes=["secondary-action"])
-                            delete_chat_btn = gr.Button("Delete", elem_classes=["danger-action"])
-                    with gr.Column(scale=30, variant=self._variant):
+                            rename_chat_btn = gr.Button(
+                                "Rename", elem_classes=["secondary-action"]
+                            )
+                            delete_chat_btn = gr.Button(
+                                "Delete", elem_classes=["danger-action"]
+                            )
+                    with gr.Column(
+                        scale=30,
+                        variant=self._variant,
+                        elem_classes=["conversation-main"],
+                    ):
                         history_chatbot = gr.Chatbot(
                             elem_id="history-chatbot",
                             layout="bubble",
                             value=initial_history,
                             height=550,
+                            show_label=False,
+                            container=False,
                             show_copy_button=True,
                             bubble_full_width=False,
                             avatar_images=self._avatar_images,
+                            placeholder="<h2>How can I help you?</h2>",
                         )
-                        with gr.Row(variant=self._variant):
+                        with gr.Row(
+                            variant=self._variant,
+                            elem_classes=["message-composer"],
+                        ):
                             history_chat_mode = gr.Dropdown(
                                 choices=["chat", "QA"],
                                 value="QA",
                                 show_label=False,
                                 interactive=True,
+                                visible=False,
                             )
-                            voice_launcher = gr.HTML(
+                            gr.HTML(
                                 """
                                 <button id="voice-launcher" type="button"
                                     aria-label="Open voice mode">🎙</button>
@@ -640,18 +936,15 @@ class LocalChatbotUI:
                                 elem_id="history-message-input",
                                 value=DefaultElement.DEFAULT_MESSAGE,
                                 placeholder="Message your local assistant...",
-                                file_types=[
-                                    ".txt",
-                                    ".pdf",
-                                    ".csv",
-                                    ".md",
-                                    ".json",
-                                    ".docx",
-                                ],
+                                file_types=CHAT_FILE_TYPES,
                                 show_label=False,
                                 scale=6,
                                 lines=1,
                             )
+                        history_status = gr.Markdown(
+                            "Ready",
+                            elem_id="chat-status",
+                        )
                         voice_input = gr.Textbox(
                             show_label=False,
                             elem_id="voice-input",
@@ -665,7 +958,7 @@ class LocalChatbotUI:
                         )
                         voice_audio_state = gr.State(0)
                         voice_panel = gr.HTML(elem_id="voice-panel")
-            with gr.Tab("Workspace"):
+            with gr.Tab("Workspace", visible=False):
                 sidebar_state = gr.State(True)
                 with gr.Row(variant=self._variant, equal_height=False):
                     with gr.Column(
@@ -673,7 +966,9 @@ class LocalChatbotUI:
                     ) as setting:
                         with gr.Column():
                             status = gr.Textbox(
-                                label="Assistant status", value="Ready!", interactive=False
+                                label="Assistant status",
+                                value="Ready!",
+                                interactive=False,
                             )
                             model = gr.Dropdown(
                                 label="Model",
@@ -696,7 +991,7 @@ class LocalChatbotUI:
                             documents = gr.Files(
                                 label="Knowledge files",
                                 value=[],
-                                file_types=[".txt", ".pdf", ".csv", ".md", ".json", ".docx"],
+                                file_types=CHAT_FILE_TYPES,
                                 file_count="multiple",
                                 height=150,
                                 interactive=True,
@@ -705,7 +1000,14 @@ class LocalChatbotUI:
                                 upload_doc_btn = gr.UploadButton(
                                     label="Upload",
                                     value=[],
-                                    file_types=[".txt", ".pdf", ".csv", ".md", ".json", ".docx"],
+                                    file_types=[
+                                        ".txt",
+                                        ".pdf",
+                                        ".csv",
+                                        ".md",
+                                        ".json",
+                                        ".docx",
+                                    ],
                                     file_count="multiple",
                                     min_width=20,
                                     visible=False,
@@ -739,7 +1041,14 @@ class LocalChatbotUI:
                                 elem_id="message-input",
                                 value=DefaultElement.DEFAULT_MESSAGE,
                                 placeholder="Enter you message:",
-                                file_types=[".txt", ".pdf", ".csv", ".md", ".json", ".docx"],
+                                file_types=[
+                                    ".txt",
+                                    ".pdf",
+                                    ".csv",
+                                    ".md",
+                                    ".json",
+                                    ".docx",
+                                ],
                                 show_label=False,
                                 scale=6,
                                 lines=1,
@@ -755,7 +1064,7 @@ class LocalChatbotUI:
                             clear_btn = gr.Button(value="Clear chat", min_width=20)
                             reset_btn = gr.Button(value="Reset", min_width=20)
 
-            with gr.Tab("Settings"):
+            with gr.Tab("Settings", visible=False):
                 with gr.Row(variant=self._variant, equal_height=False):
                     with gr.Column():
                         system_prompt = gr.Textbox(
@@ -767,7 +1076,7 @@ class LocalChatbotUI:
                         )
                         sys_prompt_btn = gr.Button(value="Set System Prompt")
 
-            with gr.Tab("Diagnostics"):
+            with gr.Tab("Diagnostics", visible=False):
                 with gr.Row(variant=self._variant):
                     log = gr.Code(
                         label="", language="markdown", interactive=False, lines=30
@@ -893,7 +1202,7 @@ class LocalChatbotUI:
                     history_chatbot,
                     current_history,
                 ],
-                outputs=[history_message, history_chatbot],
+                outputs=[history_message, history_chatbot, history_status],
             ).then(
                 self._save_chat_history,
                 inputs=[current_history, history_chatbot],

@@ -60,8 +60,21 @@ class StorageSettings(BaseModel):
     port: int = Field(default=8000, description="Port number")
 
 
+class ImageSettings(BaseModel):
+    vision_model: str = Field(default="gemma3:4b", description="Ollama vision model")
+    generation_model: str = Field(
+        default="stabilityai/sd-turbo", description="Text-to-image model"
+    )
+    output_dir: str = Field(default="data/generated", description="Generated images")
+    width: int = Field(default=512, description="Generated image width")
+    height: int = Field(default=512, description="Generated image height")
+    inference_steps: int = Field(default=1, description="Diffusion steps")
+    guidance_scale: float = Field(default=0.0, description="Prompt guidance")
+
+
 class RAGSettings(BaseModel):
     ollama: OllamaSettings = OllamaSettings()
     retriever: RetrieverSettings = RetrieverSettings()
     ingestion: IngestionSettings = IngestionSettings()
     storage: StorageSettings = StorageSettings()
+    image: ImageSettings = ImageSettings()

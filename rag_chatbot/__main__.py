@@ -22,6 +22,12 @@ parser.add_argument(
     help="Set host to local or in docker container",
 )
 parser.add_argument("--share", action="store_true", help="Share gradio app")
+parser.add_argument(
+    "--port",
+    type=int,
+    default=7860,
+    help="Port used by the Gradio web interface",
+)
 args = parser.parse_args()
 
 # OLLAMA SERVER
@@ -48,4 +54,11 @@ ui = LocalChatbotUI(
     avatar_images=AVATAR_IMAGES,
 )
 
-ui.build().launch(share=args.share, server_name=args.host, debug=False, show_api=False)
+ui.build().launch(
+    share=args.share,
+    server_name=args.host,
+    server_port=args.port,
+    max_file_size="25mb",
+    debug=False,
+    show_api=False,
+)
